@@ -13,6 +13,8 @@ Design:
 
 from __future__ import annotations
 
+import re
+
 # --- the safety floor (never trust the caller) ---------------------------------------------------------
 
 # Always appended to the negative prompt. Biases hard away from explicit content.
@@ -22,19 +24,26 @@ NSFW_NEGATIVE = (
 )
 
 # If any of these appear in the POSITIVE prompt, reject outright (don't even try to render).
-POSITIVE_DENYLIST = (
-    "nsfw", "nude", "naked", "nudity", "explicit", "porn", "hentai", "sex ", "sexual", "genital",
-    "penis", "vagina", "cum", "blowjob", "topless", "bottomless", "undressed", "nipple",
+# Matched on WORD BOUNDARIES, never as raw substrings — "cum" must not fire on "do(cum)entary",
+# "sex" must not fire on "uni(sex)"/"(sex)tant". Prefix terms allow natural suffixes (nude->nudes,
+# nipple->nipples, genital->genitalia); the short, false-positive-prone words are whole-word only.
+_DENY_PREFIX = (
+    "nsfw", "nude", "nudity", "naked", "explicit", "porn", "hentai", "sexual", "genital",
+    "penis", "vagina", "blowjob", "topless", "bottomless", "undressed", "nipple", "areola",
+)
+_DENY_WHOLE = ("cum", "sex")  # whole-word only (substring would hit documentary/cucumber/unisex/…)
+
+_DENY_RE = re.compile(
+    r"\b(?:" + "|".join(_DENY_PREFIX) + r")"          # word-start boundary, any suffix
+    r"|\b(?:" + "|".join(_DENY_WHOLE) + r")\b",       # both boundaries
+    re.IGNORECASE,
 )
 
 
 def positive_is_blocked(prompt: str) -> str | None:
-    """Return the offending term if the positive prompt requests NSFW, else None."""
-    low = f" {prompt.lower()} "
-    for term in POSITIVE_DENYLIST:
-        if term in low:
-            return term.strip()
-    return None
+    """Return the offending term if the positive prompt requests NSFW, else None (word-boundary match)."""
+    m = _DENY_RE.search(prompt or "")
+    return m.group(0).lower() if m else None
 
 
 # --- craft / style negative profiles (overridable by the consuming repo) --------------------------------
