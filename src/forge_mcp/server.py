@@ -23,7 +23,7 @@ from PIL import Image
 
 from .config import (DEFAULT_CFG, DEFAULT_SAMPLER, DEFAULT_SCHEDULER, DEFAULT_SHOT, DEFAULT_STEPS,
                      ALLOWED_WH, MAX_PIXELS, SHOTS, Settings)
-from .forge import ForgeClient, ForgeError
+from .forge import ForgeClient, ForgeError, ForgeOOM
 from .presets import apply_style, expand_negative, positive_is_blocked
 
 INSTRUCTIONS = """\
@@ -43,6 +43,11 @@ It is NOT a single-feature scalpel (fixing just the eyes also moves skin/age) �
 
 Prompts are sent VERBATIM (attention weights like `(grey eyes:1.3)` pass through). The server never rewrites
 them. NSFW is blocked server-side regardless of prompt or profile.
+
+Every result's text block has a `status`: "ok" (image returned), "refused" (a POLICY decision — SFW block
+or an out-of-envelope resolution; `reason`/`matched`/`advice` say how to adjust — rephrase, don't retry
+unchanged), or "error" (a genuine FAULT — `kind` like "gpu_oom"/"forge" + `detail`; infra, not policy, so a
+prompt change won't help). These are three distinct outcomes — branch on `status`, never on the prose.
 """
 
 TOOL = ToolAnnotations(readOnlyHint=False, openWorldHint=False)
@@ -73,6 +78,22 @@ def _slug(text: str, n: int = 40) -> str:
     return (s[:n].rstrip("-")) or "image"
 
 
+def _text(payload: dict[str, Any]) -> list[Any]:
+    return [TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+
+
+def _refused(reason: str, **extra: Any) -> list[Any]:
+    """A POLICY refusal — a normal, successful response (not an error). The caller should adjust the
+    request (rephrase / pick a valid shot), not retry unchanged or treat it as a fault."""
+    return _text({"status": "refused", "reason": reason, **extra})
+
+
+def _error(kind: str, detail: str) -> list[Any]:
+    """A genuine FAULT (Forge down, OOM, bad response) — infra, not policy. The caller may retry later
+    or surface it; it is NOT something a prompt change fixes."""
+    return _text({"status": "error", "kind": kind, "detail": detail})
+
+
 def build_server(settings: Settings) -> MCPServer:
     mcp = MCPServer(name="forge", instructions=INSTRUCTIONS)
     forge = ForgeClient(settings)
@@ -92,6 +113,7 @@ def build_server(settings: Settings) -> MCPServer:
         seed = info.get("seed", resolved.get("seed"))
         params = {**resolved, "model": model, "seed": seed}  # the sidecar content
         out: dict[str, Any] = {
+            "status": "ok",
             "source": "forge",
             "params": params,
             "suggested_filename": f"{_slug(subject)}-{seed}.png",
@@ -141,9 +163,12 @@ def build_server(settings: Settings) -> MCPServer:
         """
         blocked = positive_is_blocked(prompt)
         if blocked:
-            raise ValueError(f"NSFW request blocked server-side (matched {blocked!r}). This tool is SFW-only; "
-                             "use the Forge UI directly for anything else.")
-        w, h = _resolve_wh(shot, width, height)
+            return _refused(f"prompt matched the SFW policy term {blocked!r}", matched=blocked,
+                            advice="rephrase without that term — this tool is SFW-only (use the Forge UI directly for NSFW)")
+        try:
+            w, h = _resolve_wh(shot, width, height)
+        except ValueError as e:
+            return _refused(str(e), kind="resolution")
         positive = apply_style(prompt, style)
         neg = expand_negative(negative_profile, negative)
         model = model or settings.default_model
@@ -154,7 +179,12 @@ def build_server(settings: Settings) -> MCPServer:
         }
         resolved = {"prompt": positive, "negative_prompt": neg, "seed": seed, "steps": steps, "cfg": cfg,
                     "sampler": sampler, "scheduler": scheduler, "width": w, "height": h, "shot": shot}
-        return await _run("/sdapi/v1/txt2img", payload, model, resolved, include_full, subject=prompt)
+        try:
+            return await _run("/sdapi/v1/txt2img", payload, model, resolved, include_full, subject=prompt)
+        except ForgeOOM as e:
+            return _error("gpu_oom", str(e))
+        except ForgeError as e:
+            return _error("forge", str(e))
 
     @mcp.tool(annotations=TOOL, structured_output=False)
     async def edit_image(
@@ -188,9 +218,12 @@ def build_server(settings: Settings) -> MCPServer:
         """
         blocked = positive_is_blocked(prompt)
         if blocked:
-            raise ValueError(f"NSFW request blocked server-side (matched {blocked!r}). This tool is SFW-only; "
-                             "use the Forge UI directly for anything else.")
-        w, h = _resolve_wh(shot, width, height)
+            return _refused(f"prompt matched the SFW policy term {blocked!r}", matched=blocked,
+                            advice="rephrase without that term — this tool is SFW-only (use the Forge UI directly for NSFW)")
+        try:
+            w, h = _resolve_wh(shot, width, height)
+        except ValueError as e:
+            return _refused(str(e), kind="resolution")
         positive = apply_style(prompt, style)
         neg = expand_negative(negative_profile, negative)
         model = model or settings.default_model
@@ -203,7 +236,12 @@ def build_server(settings: Settings) -> MCPServer:
         resolved = {"prompt": positive, "negative_prompt": neg, "seed": seed, "steps": steps, "cfg": cfg,
                     "sampler": sampler, "scheduler": scheduler, "width": w, "height": h, "shot": shot,
                     "denoising_strength": denoising_strength}
-        return await _run("/sdapi/v1/img2img", payload, model, resolved, include_full, subject=prompt)
+        try:
+            return await _run("/sdapi/v1/img2img", payload, model, resolved, include_full, subject=prompt)
+        except ForgeOOM as e:
+            return _error("gpu_oom", str(e))
+        except ForgeError as e:
+            return _error("forge", str(e))
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False), structured_output=False)
     async def list_models() -> str:
