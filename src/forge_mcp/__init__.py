@@ -23,7 +23,7 @@ async def _serve(settings: Settings, transport: str, host: str, port: int) -> No
 
         if not settings.http_token and host not in ("127.0.0.1", "localhost", "::1"):
             log.warning("serving on %s without FORGE_MCP_TOKEN - anyone on the network can drive the GPU", host)
-        app = BearerAuth(mcp.streamable_http_app(host=host), settings.http_token)
+        app = BearerAuth(mcp.streamable_http_app(host=host), settings)
         await uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info")).serve()
 
 

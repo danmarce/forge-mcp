@@ -19,7 +19,9 @@ the same box also runs a local LLM or other workloads.
   for any character anchors or profiles.
 - **SFW by default** — a server-side NSFW block is applied unconditionally (it does not trust the prompt, the
   profile, or the calling model).
-- **Returns a viewable preview inline** plus the full-resolution PNG, so the caller can save it wherever it wants.
+- **Returns a viewable preview inline** plus a short-lived **link** to the full-resolution PNG (a URL, not
+  base64 — base64 would flood the model's context), so the caller downloads the keeper out-of-band. This is
+  topology-independent: the server and the saving machine can be different hosts.
 - Named **negative/style profiles** and **shot** shortcuts (`portrait`, `establishing`, `square`) over raw
   width/height.
 
@@ -50,6 +52,8 @@ FORGE_URL=http://127.0.0.1:7860 FORGE_MCP_TOKEN=$(openssl rand -hex 32) \
 | `FORGE_DEFAULT_MODEL` | `DreamShaperXL_Turbo_SFW` | Checkpoint used when a request doesn't name one |
 | `FORGE_GEN_TIMEOUT` | `180` | Seconds to wait on Forge (covers a cold model-load + generation) |
 | `FORGE_PREVIEW_MAX_PX` | `768` | Longest edge of the inline JPEG preview |
+| `FORGE_PUBLIC_URL` | *(unset)* | Base URL clients use to reach **this** server (e.g. `http://host:8000`); required so `include_full=True` returns a downloadable `full_res_url`. Must be reachable from the saving machine. |
+| `FORGE_IMG_TTL` | `600` | Seconds a served full-res link stays valid (TTL GC, not delete-on-first-GET) |
 
 > **TLS note:** behind a TLS-inspecting proxy, `uv` may report `UnknownIssuer`; pass `--system-certs`
 > (or set `UV_NATIVE_TLS=1`) so it trusts the OS certificate store. The server itself uses `truststore` at

@@ -37,8 +37,14 @@ class Settings:
     # Inline preview: a full 1024^2 PNG base64 (~2 MB) strains some MCP clients -> return a modest JPEG preview.
     preview_max_px: int = field(default_factory=lambda: int(os.environ.get("FORGE_PREVIEW_MAX_PX", "768")))
     preview_quality: int = field(default_factory=lambda: int(os.environ.get("FORGE_PREVIEW_QUALITY", "82")))
-    # Server-side backstop save dir (Forge also saves its own outputs). The CONSUMING REPO is the real home.
+    # Full-res keeper-save: the server writes the PNG here and serves it at /img/<name> for out-of-band download
+    # (base64 in the result would flood the model's context). The CONSUMING REPO is still the real home.
     out_dir: str = field(default_factory=lambda: os.environ.get("FORGE_OUT_DIR", "out"))
+    # The base URL clients use to reach THIS server (e.g. http://yuki:8646, or a ZeroTier IP for cross-site).
+    # Required for include_full=True to return a downloadable link. Must be reachable from the saving machine.
+    public_url: str = field(default_factory=lambda: os.environ.get("FORGE_PUBLIC_URL", "").rstrip("/"))
+    # How long a served full-res link stays valid (TTL GC, not delete-on-first-GET — a dropped download retries).
+    img_ttl: int = field(default_factory=lambda: int(os.environ.get("FORGE_IMG_TTL", "600")))
     default_model: str = field(default_factory=lambda: os.environ.get("FORGE_DEFAULT_MODEL", DEFAULT_MODEL))
     # Bearer token required on streamable-http when set (sent as an Authorization header).
     http_token: str | None = field(default_factory=lambda: os.environ.get("FORGE_MCP_TOKEN") or None)

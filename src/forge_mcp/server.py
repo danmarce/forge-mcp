@@ -14,7 +14,10 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import re
+import secrets
+import time
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -32,10 +35,12 @@ and is kept on a VRAM-safe envelope (fixed ~1 MP aspect buckets, no hires-fix). 
 (txt2img) and edit_image (img2img). Defaults are the known-good DreamShaper XL Turbo recipe, so a bare
 "generate X" just works; everything is overridable.
 
-Each result returns an inline PREVIEW plus, in the text block, the exact params used and the FULL-RES PNG as
-base64 (`full_res_png_b64`) — save that to your repo (e.g. designs/<name>/<subject>-<seed>.png) and write the
-returned `params` beside it as a sidecar .json. The resolved `seed` is always echoed: lock it to reproduce a
-character ("same seed, change only age/colour = same soul, different vessel").
+Each result returns a small inline PREVIEW (to judge in-context) plus, in the text block, the exact params
+used. With include_full=True you also get `full_res_url` — a short-lived link to the full-res PNG: download it
+out-of-band (the result shows a ready `download` command), e.g. `curl -o designs/<name>/<file> <full_res_url>`,
+and write the returned `params` beside it as a sidecar .json. The full-res is a LINK, not base64, so it never
+floods context. include_full=False returns preview + params only. The resolved `seed` is always echoed: lock
+it to reproduce a character ("same seed, change only age/colour = same soul, different vessel").
 
 edit_image (img2img) is a HOLISTIC transform — it re-derives the whole frame, so use it for variants that
 should re-settle (wardrobe, pose, lighting, hair) at denoise ~0.3-0.45 (keep subject) to ~0.5-0.65 (restyle).
@@ -94,6 +99,34 @@ def _error(kind: str, detail: str) -> list[Any]:
     return _text({"status": "error", "kind": kind, "detail": detail})
 
 
+IMG_NAME_RE = re.compile(r"[A-Za-z0-9_-]+\.png")  # capability-token filenames only (no path traversal)
+
+
+def _purge_expired(settings: Settings) -> None:
+    """Delete served full-res files older than the TTL (lazy GC on each save)."""
+    now = time.time()
+    try:
+        for fn in os.listdir(settings.out_dir):
+            p = os.path.join(settings.out_dir, fn)
+            if fn.endswith(".png") and now - os.path.getmtime(p) > settings.img_ttl:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _save_fullres(settings: Settings, png_b64: str) -> str:
+    """Write the full-res PNG under an unguessable capability name; return that filename (served at /img/<name>)."""
+    os.makedirs(settings.out_dir, exist_ok=True)
+    _purge_expired(settings)
+    name = f"{secrets.token_urlsafe(12)}.png"
+    with open(os.path.join(settings.out_dir, name), "wb") as f:
+        f.write(base64.b64decode(png_b64))
+    return name
+
+
 def build_server(settings: Settings) -> MCPServer:
     mcp = MCPServer(name="forge", instructions=INSTRUCTIONS)
     forge = ForgeClient(settings)
@@ -112,15 +145,30 @@ def build_server(settings: Settings) -> MCPServer:
             pass
         seed = info.get("seed", resolved.get("seed"))
         params = {**resolved, "model": model, "seed": seed}  # the sidecar content
+        fname = f"{_slug(subject)}-{seed}.png"
         out: dict[str, Any] = {
             "status": "ok",
             "source": "forge",
             "params": params,
-            "suggested_filename": f"{_slug(subject)}-{seed}.png",
-            "note": "save full_res_png_b64 to your repo (designs/<name>/) and write `params` beside it as .json",
+            "suggested_filename": fname,
         }
         if include_full:
-            out["full_res_png_b64"] = png_b64
+            # Full-res is served as a short-lived LINK, never base64 — base64 floods/truncates the context.
+            name = _save_fullres(settings, png_b64)
+            if settings.public_url:
+                url = f"{settings.public_url}/img/{name}"
+                out["full_res_url"] = url
+                out["full_res_ttl_seconds"] = settings.img_ttl
+                out["download"] = f"curl -o designs/<name>/{fname} {url}"
+                out["note"] = ("download full_res_url to your repo (designs/<name>/) and write `params` beside "
+                               f"it as a sidecar .json. Link expires in ~{settings.img_ttl // 60} min; re-run "
+                               "the same seed to regenerate if it lapses.")
+            else:
+                out["full_res_file"] = name  # saved on the server; no public URL configured
+                out["note"] = ("full-res saved on the server but FORGE_PUBLIC_URL is not set, so no download "
+                               "link can be given. Set it (e.g. http://<host>:<port>) to enable keeper-save.")
+        else:
+            out["note"] = "preview only (include_full=False). Re-run the same seed with include_full=True for the full-res link."
         preview = _preview_jpeg(png_b64, settings.preview_max_px, settings.preview_quality)
         return [
             ImageContent(type="image", data=preview, mimeType="image/jpeg"),
@@ -145,7 +193,8 @@ def build_server(settings: Settings) -> MCPServer:
         include_full: bool = True,
     ) -> list[Any]:
         """Generate an image (txt2img) on the local SDXL box. Returns an inline preview + (in the text block)
-        the exact params and the full-res PNG base64 to save in your repo.
+        the exact params and, with include_full=True, a short-lived `full_res_url` to download the full-res PNG
+        into your repo (a link, not base64 — base64 floods context).
 
         Args:
             prompt: the positive prompt, sent VERBATIM (attention weights like `(grey eyes:1.3)` work).
@@ -158,8 +207,9 @@ def build_server(settings: Settings) -> MCPServer:
             negative_profile: named profile(s), e.g. "sfw-strict" (default), "mature", "candid+sfw-strict".
             style: optional positive preset, e.g. "photoreal".
             width/height: raw size, must be a VRAM-safe bucket (832x1216, 1216x832, 1024x1024).
-            include_full: include the full-res PNG base64 in the result (default True; False = preview only,
-                lighter for rapid iteration — re-run with the echoed seed to get the full-res of a keeper).
+            include_full: default True = also return `full_res_url` (a short-lived download link to the full-res
+                PNG + a ready `download` curl command); False = preview + params only, lighter for rapid
+                iteration (re-run the echoed seed with include_full=True to get the link for a keeper).
         """
         blocked = positive_is_blocked(prompt)
         if blocked:
@@ -259,16 +309,26 @@ import hmac  # noqa: E402
 
 
 class BearerAuth:
-    """Requires `Authorization: Bearer <token>` on streamable-http when a token is set. /healthz always open."""
+    """ASGI gate for streamable-http:
+      * /healthz        — always open (Docker healthcheck).
+      * /img/<name>     — open, serves a saved full-res PNG by its capability token (short-lived; no bearer so
+                          the saving machine can `curl` it without the server secret). Path-traversal-safe.
+      * everything else — the MCP app, requiring `Authorization: Bearer <token>` when a token is set.
+    """
 
-    def __init__(self, app, token: str | None) -> None:
+    def __init__(self, app, settings: Settings) -> None:
         self.app = app
-        self.expected = f"Bearer {token}".encode() if token else None
+        self.settings = settings
+        self.expected = f"Bearer {settings.http_token}".encode() if settings.http_token else None
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "http":
-            if scope["path"] == "/healthz":
+            path = scope["path"]
+            if path == "/healthz":
                 await _respond(send, 200, b"ok")
+                return
+            if path.startswith("/img/"):
+                await self._serve_image(path[len("/img/"):], send)
                 return
             if self.expected is not None:
                 got = dict(scope["headers"]).get(b"authorization", b"")
@@ -276,6 +336,20 @@ class BearerAuth:
                     await _respond(send, 401, b"unauthorized")
                     return
         await self.app(scope, receive, send)
+
+    async def _serve_image(self, name: str, send) -> None:
+        if not IMG_NAME_RE.fullmatch(name):  # capability tokens only — blocks path traversal
+            await _respond(send, 404, b"not found")
+            return
+        path = os.path.join(self.settings.out_dir, name)
+        if not os.path.isfile(path) or time.time() - os.path.getmtime(path) > self.settings.img_ttl:
+            await _respond(send, 404, b"not found or expired")
+            return
+        with open(path, "rb") as f:
+            data = f.read()
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"image/png"), (b"content-length", str(len(data)).encode())]})
+        await send({"type": "http.response.body", "body": data})
 
 
 async def _respond(send, status: int, body: bytes) -> None:

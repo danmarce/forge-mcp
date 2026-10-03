@@ -36,6 +36,17 @@ can override by passing its own negative text.
   different vessel. img2img from a canonical keeper *anchors* a character, but it is **holistic** (re-derives
   the whole frame) — it is NOT a single-feature scalpel; document it honestly.
 
+## Full-res is a link, not base64 (topology-aware keeper-save)
+
+The server and the consuming repo are typically on **different machines** (MCP next to the GPU; repo on a
+workstation). So a full-res PNG can't be written to the repo's filesystem server-side, and base64 in the tool
+result floods/truncates the model's context (~2.7 MB ≈ ~1M tokens — predicted in the brief, confirmed on first
+contact). The fix: `include_full=True` saves the PNG under an unguessable capability name in `out_dir` and
+returns a short-lived **`full_res_url`** (served at `/img/<name>` by the ASGI gate, open so the saving machine
+can `curl` it without the bearer) + a ready `download` command. TTL GC (`FORGE_IMG_TTL`, default 10 min), not
+delete-on-first-GET — a dropped download just retries. Needs `FORGE_PUBLIC_URL` set to a client-reachable base.
+The `/img/<name>` serve is path-traversal-safe (capability tokens only). `include_full=False` = preview + params.
+
 ## Safety: NSFW is blocked server-side, unconditionally
 
 `presets.NSFW_NEGATIVE` is appended to **every** request's negative prompt, and `positive_is_blocked` rejects
