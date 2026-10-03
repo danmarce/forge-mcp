@@ -50,3 +50,28 @@ def test_fullres_save_purge_and_no_traversal(tmp_path, monkeypatch):
     os.utime(p, (old, old))
     _purge_expired(s)
     assert not os.path.isfile(p)
+
+
+def test_refresh_hits_both_rescans_then_lists_loras():
+    import asyncio
+
+    import httpx
+
+    from forge_mcp.forge import ForgeClient
+
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append((req.method, req.url.path))
+        if req.url.path == "/sdapi/v1/loras":
+            return httpx.Response(200, json=[{"name": "zeta_style", "alias": "z"}, {"name": "alpha_detail"}])
+        return httpx.Response(200, json=None)
+
+    async def go():
+        fc = ForgeClient(Settings())
+        fc._client = httpx.AsyncClient(base_url="http://forge", transport=httpx.MockTransport(handler))
+        await fc.refresh()
+        return await fc.list_loras()
+
+    assert asyncio.run(go()) == ["alpha_detail", "zeta_style"]
+    assert seen[:2] == [("POST", "/sdapi/v1/refresh-checkpoints"), ("POST", "/sdapi/v1/refresh-loras")]

@@ -59,13 +59,24 @@ class ForgeClient:
             if _looks_like_oom(text):
                 raise ForgeOOM("GPU out of memory — the shared box was busy. Try again, or a smaller shot.")
             raise ForgeError(f"Forge POST {path} -> {r.status_code}: {text[:300]}")
-        return r.json()
+        return r.json() if r.content else {}  # the refresh-* endpoints may answer with an empty body
 
     # --- discovery -------------------------------------------------------------------------------------
 
     async def list_models(self) -> list[str]:
         data = await self._get("/sdapi/v1/sd-models")
         return [m.get("model_name") or m.get("title", "") for m in data]
+
+    async def list_loras(self) -> list[str]:
+        """LoRA names as Forge accepts them in `<lora:NAME:weight>`."""
+        data = await self._get("/sdapi/v1/loras")
+        return sorted(m.get("name", "") for m in data)
+
+    async def refresh(self) -> None:
+        """Rescan the checkpoint + LoRA folders so newly dropped files show up without restarting Forge.
+        A disk rescan, not GPU work — deliberately outside the GPU lock so it never queues behind a gen."""
+        await self._post("/sdapi/v1/refresh-checkpoints", {})
+        await self._post("/sdapi/v1/refresh-loras", {})
 
     async def current_model(self) -> str | None:
         opts = await self._get("/sdapi/v1/options")

@@ -293,12 +293,26 @@ def build_server(settings: Settings) -> MCPServer:
         except ForgeError as e:
             return _error("forge", str(e))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False), structured_output=False)
-    async def list_models() -> str:
-        """List the image models (checkpoints) available on the Forge box, and which one is loaded."""
-        models = await forge.list_models()
-        current = await forge.current_model()
-        return json.dumps({"loaded": current, "available": models}, ensure_ascii=False)
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False),
+              structured_output=False)
+    async def list_models(refresh: bool = False) -> list[Any]:
+        """List the checkpoints and LoRAs available on the Forge box, and which checkpoint is loaded.
+
+        Args:
+            refresh: rescan Forge's model + LoRA folders first — use after dropping new files on the box.
+                Without it, Forge only sees files that were there at its last start/refresh.
+        LoRAs are used in the prompt as `<lora:NAME:weight>` with a name from `loras`.
+        """
+        try:
+            if refresh:
+                await forge.refresh()
+            models = await forge.list_models()
+            loras = await forge.list_loras()
+            current = await forge.current_model()
+        except ForgeError as e:
+            return _error("forge", str(e))
+        return _text({"status": "ok", "refreshed": refresh, "loaded": current,
+                      "available": models, "loras": loras})
 
     return mcp
 
