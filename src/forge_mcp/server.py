@@ -45,6 +45,10 @@ it to reproduce a character ("same seed, change only age/colour = same soul, dif
 edit_image (img2img) is a HOLISTIC transform — it re-derives the whole frame, so use it for variants that
 should re-settle (wardrobe, pose, lighting, hair) at denoise ~0.3-0.45 (keep subject) to ~0.5-0.65 (restyle).
 It is NOT a single-feature scalpel (fixing just the eyes also moves skin/age) — do surgical fixes in a PSD.
+Pass the init image BY REFERENCE, never as base64 in context: upload the keeper out-of-band from the shell
+(`curl -H "Authorization: Bearer $FORGE_MCP_TOKEN" --data-binary @keeper.png <server>/upload` -> {"ref": ...})
+and call edit_image(init_image_ref=<ref>). A recent result's `full_res_url` also works as a ref, so you can
+iterate on a render with no round-trip. Refs expire with the full-res TTL; re-upload if one lapses.
 
 Prompts are sent VERBATIM (attention weights like `(grey eyes:1.3)` pass through). The server never rewrites
 them. NSFW is blocked server-side regardless of prompt or profile.
@@ -100,6 +104,7 @@ def _error(kind: str, detail: str) -> list[Any]:
 
 
 IMG_NAME_RE = re.compile(r"[A-Za-z0-9_-]+\.png")  # capability-token filenames only (no path traversal)
+UPLOAD_MAX_PIXELS = 4096 * 4096  # an init image is resized to the bucket anyway; this just stops decompression bombs
 
 
 def _purge_expired(settings: Settings) -> None:
@@ -125,6 +130,38 @@ def _save_fullres(settings: Settings, png_b64: str) -> str:
     with open(os.path.join(settings.out_dir, name), "wb") as f:
         f.write(base64.b64decode(png_b64))
     return name
+
+
+def _store_upload(settings: Settings, data: bytes) -> str:
+    """Validate an uploaded init image and store it under a capability name (same dir + TTL as full-res).
+    Re-encoded as PNG through Pillow, so only a real decodable image ever lands on disk. ValueError if not."""
+    if len(data) > settings.upload_max_bytes:
+        raise ValueError(f"upload too large ({len(data)} bytes; max {settings.upload_max_bytes})")
+    try:
+        img = Image.open(io.BytesIO(data))
+        if img.width * img.height > UPLOAD_MAX_PIXELS:
+            raise ValueError(f"image too large ({img.width}x{img.height}; max {UPLOAD_MAX_PIXELS} pixels)")
+        img.load()
+    except ValueError:
+        raise
+    except Exception as e:  # Pillow raises a zoo of types for garbage / truncated input
+        raise ValueError(f"not a decodable image: {e}") from e
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return _save_fullres(settings, base64.b64encode(buf.getvalue()).decode())
+
+
+def _resolve_init_ref(settings: Settings, ref: str) -> str:
+    """Turn an init_image_ref (an /upload ref, or a recent full_res_url / its name) into base64 for Forge.
+    ValueError when it is malformed, missing, or expired — a caller-fixable input, not a fault."""
+    name = ref.strip().rsplit("/", 1)[-1]  # accept the bare name or the whole http://host/img/<name> URL
+    if not IMG_NAME_RE.fullmatch(name):  # capability tokens only — blocks path traversal
+        raise ValueError(f"malformed init_image_ref {ref!r}")
+    path = os.path.join(settings.out_dir, name)
+    if not os.path.isfile(path) or time.time() - os.path.getmtime(path) > settings.img_ttl:
+        raise ValueError(f"init_image_ref {name!r} not found or expired (refs live ~{settings.img_ttl // 60} min)")
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
 
 
 def build_server(settings: Settings) -> MCPServer:
@@ -239,7 +276,8 @@ def build_server(settings: Settings) -> MCPServer:
     @mcp.tool(annotations=TOOL, structured_output=False)
     async def edit_image(
         prompt: str,
-        init_image: str,
+        init_image_ref: str | None = None,
+        init_image: str | None = None,
         denoising_strength: float = 0.45,
         shot: str = DEFAULT_SHOT,
         model: str | None = None,
@@ -261,8 +299,13 @@ def build_server(settings: Settings) -> MCPServer:
         pass the character's canonical keeper as `init_image` and its seed/prompt, then change only the delta.
 
         Args:
-            init_image: the source image as base64 (your client reads the keeper PNG from the repo and passes
-                it; also load its sidecar params so this render builds on the keeper's recipe).
+            init_image_ref: the source image BY REFERENCE (preferred — keeps base64 out of your context). Either
+                (a) the `ref` from uploading the keeper out-of-band, from the shell:
+                    curl -H "Authorization: Bearer $FORGE_MCP_TOKEN" --data-binary @keeper.png <server>/upload
+                or (b) a recent result's `full_res_url` (or its name) — iterate on a render with no round-trip.
+                Refs expire with the full-res TTL (~10 min); re-upload if one lapses. Also load the keeper's
+                sidecar params so this render builds on its recipe.
+            init_image: the source image as raw base64 — only for small images; a full keeper floods context.
             denoising_strength: 0.3-0.45 = keep the subject, fix details; 0.5-0.65 = restyle. Default 0.45.
             (all other args: see generate_image.)
         """
@@ -270,6 +313,14 @@ def build_server(settings: Settings) -> MCPServer:
         if blocked:
             return _refused(f"prompt matched the SFW policy term {blocked!r}", matched=blocked,
                             advice="rephrase without that term — this tool is SFW-only (use the Forge UI directly for NSFW)")
+        if bool(init_image_ref) == bool(init_image):
+            return _refused("pass exactly one of init_image_ref (preferred) or init_image", kind="input")
+        if init_image_ref:
+            try:
+                init_image = _resolve_init_ref(settings, init_image_ref)
+            except ValueError as e:
+                return _refused(str(e), kind="input",
+                                advice="re-upload the keeper via POST /upload and pass the new ref")
         try:
             w, h = _resolve_wh(shot, width, height)
         except ValueError as e:
@@ -327,6 +378,8 @@ class BearerAuth:
       * /healthz        — always open (Docker healthcheck).
       * /img/<name>     — open, serves a saved full-res PNG by its capability token (short-lived; no bearer so
                           the saving machine can `curl` it without the server secret). Path-traversal-safe.
+      * POST /upload    — BEARER-gated (it writes): stores an init image for edit_image, returns {"ref": ...}.
+                          The mirror of /img — the keeper travels out-of-band, never as base64 in context.
       * everything else — the MCP app, requiring `Authorization: Bearer <token>` when a token is set.
     """
 
@@ -349,7 +402,33 @@ class BearerAuth:
                 if not hmac.compare_digest(got, self.expected):
                     await _respond(send, 401, b"unauthorized")
                     return
+            if path == "/upload":
+                await self._receive_upload(scope, receive, send)
+                return
         await self.app(scope, receive, send)
+
+    async def _receive_upload(self, scope, receive, send) -> None:
+        if scope["method"] != "POST":
+            await _respond(send, 405, b"POST the image bytes (curl --data-binary @file.png)")
+            return
+        cap = self.settings.upload_max_bytes
+        body = bytearray()
+        while True:
+            msg = await receive()
+            body += msg.get("body", b"")
+            if len(body) > cap:  # stop reading early rather than buffer an unbounded body
+                await _json(send, 413, {"status": "refused", "kind": "input",
+                                        "reason": f"upload too large (max {cap} bytes)"})
+                return
+            if not msg.get("more_body"):
+                break
+        try:
+            name = _store_upload(self.settings, bytes(body))
+        except ValueError as e:
+            await _json(send, 400, {"status": "refused", "kind": "input", "reason": str(e)})
+            return
+        await _json(send, 200, {"status": "ok", "ref": name, "ttl_seconds": self.settings.img_ttl,
+                                "use": f'edit_image(init_image_ref="{name}", ...)'})
 
     async def _serve_image(self, name: str, send) -> None:
         if not IMG_NAME_RE.fullmatch(name):  # capability tokens only — blocks path traversal
@@ -364,6 +443,13 @@ class BearerAuth:
         await send({"type": "http.response.start", "status": 200,
                     "headers": [(b"content-type", b"image/png"), (b"content-length", str(len(data)).encode())]})
         await send({"type": "http.response.body", "body": data})
+
+
+async def _json(send, status: int, payload: dict[str, Any]) -> None:
+    body = json.dumps(payload).encode()
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
 
 
 async def _respond(send, status: int, body: bytes) -> None:

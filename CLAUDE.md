@@ -58,6 +58,13 @@ can `curl` it without the bearer) + a ready `download` command. TTL GC (`FORGE_I
 delete-on-first-GET — a dropped download just retries. Needs `FORGE_PUBLIC_URL` set to a client-reachable base.
 The `/img/<name>` serve is path-traversal-safe (capability tokens only). `include_full=False` = preview + params.
 
+**The inbound mirror — init images by reference.** The same flood happens the other way: a keeper passed to
+`edit_image` as base64 dumps ~1.8 MB into the caller's context (found on first real img2img test). So the caller
+uploads it out-of-band — `POST /upload` (raw bytes; **bearer-gated**, since unlike `/img` it writes) → `{ref}` —
+and passes `init_image_ref`. Uploads are re-encoded through Pillow (only a real image lands on disk), size- and
+pixel-capped, and share `out_dir` + TTL with full-res, so a recent `full_res_url` is also a valid ref (iterate
+with no round-trip). Raw base64 `init_image` remains for small images.
+
 ## Safety: NSFW is blocked server-side, unconditionally
 
 `presets.NSFW_NEGATIVE` is appended to **every** request's negative prompt, and `positive_is_blocked` rejects

@@ -45,6 +45,8 @@ class Settings:
     public_url: str = field(default_factory=lambda: os.environ.get("FORGE_PUBLIC_URL", "").rstrip("/"))
     # How long a served full-res link stays valid (TTL GC, not delete-on-first-GET — a dropped download retries).
     img_ttl: int = field(default_factory=lambda: int(os.environ.get("FORGE_IMG_TTL", "600")))
+    # Cap on POST /upload (init images for edit_image). A 1 MP keeper PNG is ~1-3 MB; this leaves headroom.
+    upload_max_bytes: int = field(default_factory=lambda: int(os.environ.get("FORGE_UPLOAD_MAX_BYTES", str(20 * 2**20))))
     default_model: str = field(default_factory=lambda: os.environ.get("FORGE_DEFAULT_MODEL", DEFAULT_MODEL))
     # Bearer token required on streamable-http when set (sent as an Authorization header).
     http_token: str | None = field(default_factory=lambda: os.environ.get("FORGE_MCP_TOKEN") or None)
