@@ -1,0 +1,29 @@
+[project]
+name = "forge-mcp"
+version = "0.1.0"
+description = "Local SDXL image generation (Forge / A1111) exposed as MCP tools — frictionless, deterministic, a good shared-GPU citizen"
+readme = "README.md"
+authors = [
+    { name = "Daniel Nunez", email = "danmarce@gmail.com" }
+]
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp>=1.12",
+    "truststore>=0.10",
+    "pillow>=11.0",
+]
+
+[project.scripts]
+forge-mcp = "forge_mcp:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
