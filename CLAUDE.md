@@ -36,6 +36,17 @@ can override by passing its own negative text.
   different vessel. img2img from a canonical keeper *anchors* a character, but it is **holistic** (re-derives
   the whole frame) — it is NOT a single-feature scalpel; document it honestly.
 
+## Result contract: `status` = ok | refused | error
+
+Every tool result's text block carries a `status` — branch on it, never on the prose:
+- **ok** — image generated (preview inline; `full_res_url` present when `include_full`).
+- **refused** — a POLICY decision (SFW block, or an out-of-envelope resolution); `reason`/`matched`/`advice`
+  say how to adjust. The caller *rephrases* — it is NOT an error and NOT a retry-unchanged.
+- **error** — a genuine FAULT (`kind` = "gpu_oom"/"forge" + `detail`); infra, not policy, so a prompt change
+  won't help. (`_refused` / `_error` build these; `_run` tags success "ok".)
+★ A policy refusal must **never be raised as an exception** — doing so made a false block, a correct block, and
+a real crash indistinguishable to the caller (the opaque "Error executing tool"). Keep the three signals distinct.
+
 ## Full-res is a link, not base64 (topology-aware keeper-save)
 
 The server and the consuming repo are typically on **different machines** (MCP next to the GPU; repo on a
@@ -53,6 +64,10 @@ The `/img/<name>` serve is path-traversal-safe (capability tokens only). `includ
 explicit positive prompts outright — regardless of profile, prompt, or calling model. **Rationale:** an MCP
 cannot assume a smart/aligned caller (a weak or jailbroken client hits the same wall). Do not add a tool flag
 that relaxes this.
+
+⚠ The positive check matches on **word boundaries**, not raw substrings — else "cum" blocks "do**cum**entary"
+and "sex" blocks "uni**sex**" (a real false-positive that blocked an innocent prompt). Don't regress it to
+`term in prompt`. Pinned by `tests/test_presets.py`.
 
 ## Files
 
@@ -74,3 +89,6 @@ that relaxes this.
 
 - Python 3.12, `uv`, few dependencies (`httpx` / `mcp` / `Pillow` / `truststore`). License MPL-2.0.
 - Keep it stateless and deterministic. Never rewrite prompts silently; never relax the NSFW floor via a flag.
+- Tests: `uv run pytest` (NSFW denylist regression, the `status` contract shape, full-res TTL-GC + path-traversal).
+  Behind a TLS-inspecting proxy, `uv` needs `--system-certs` (see README). Deployment (on a shared-GPU host) and
+  its mcpo wiring live wherever this is deployed, not in this repo — this repo stays the generic, public tool.
