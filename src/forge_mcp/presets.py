@@ -20,7 +20,7 @@ import re
 # Always appended to the negative prompt. Biases hard away from explicit content.
 NSFW_NEGATIVE = (
     "nsfw, nude, nudity, naked, explicit, sexual, sex, porn, pornographic, genitalia, nipples, areola, "
-    "cleavage focus, lingerie, underwear, suggestive, erotic, fetish, hentai"
+    "cleavage focus, lingerie, underwear, suggestive, erotic, fetish, hentai, rating_explicit, rating_questionable"
 )
 
 # If any of these appear in the POSITIVE prompt, reject outright (don't even try to render).
@@ -32,17 +32,23 @@ _DENY_PREFIX = (
     "penis", "vagina", "blowjob", "topless", "bottomless", "undressed", "nipple", "areola",
 )
 _DENY_WHOLE = ("cum", "sex")  # whole-word only (substring would hit documentary/cucumber/unisex/…)
+# Booru rating tags (Pony/Illustrious vocabulary). "questionable" alone is an innocent word, so only the tag form.
+_DENY_PHRASE = (r"rating\W*questionable",)
 
 _DENY_RE = re.compile(
     r"\b(?:" + "|".join(_DENY_PREFIX) + r")"          # word-start boundary, any suffix
-    r"|\b(?:" + "|".join(_DENY_WHOLE) + r")\b",       # both boundaries
+    r"|\b(?:" + "|".join(_DENY_WHOLE) + r")\b"        # both boundaries
+    r"|\b(?:" + "|".join(_DENY_PHRASE) + r")\b",      # tag-form phrases
     re.IGNORECASE,
 )
 
 
 def positive_is_blocked(prompt: str) -> str | None:
-    """Return the offending term if the positive prompt requests NSFW, else None (word-boundary match)."""
-    m = _DENY_RE.search(prompt or "")
+    """Return the offending term if the positive prompt requests NSFW, else None (word-boundary match).
+
+    `_` is treated as a separator: booru-style tags (`rating_explicit`, `completely_nude`) would otherwise
+    slip past the word boundary, since regex counts `_` as a word character."""
+    m = _DENY_RE.search((prompt or "").replace("_", " "))
     return m.group(0).lower() if m else None
 
 
