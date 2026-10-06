@@ -40,7 +40,7 @@ class Settings:
     # Full-res keeper-save: the server writes the PNG here and serves it at /img/<name> for out-of-band download
     # (base64 in the result would flood the model's context). The CONSUMING REPO is still the real home.
     out_dir: str = field(default_factory=lambda: os.environ.get("FORGE_OUT_DIR", "out"))
-    # The base URL clients use to reach THIS server (e.g. http://yuki:8646, or a ZeroTier IP for cross-site).
+    # The base URL clients use to reach THIS server (e.g. http://gpu-host:8000, or a VPN/overlay IP for cross-site).
     # Required for include_full=True to return a downloadable link. Must be reachable from the saving machine.
     public_url: str = field(default_factory=lambda: os.environ.get("FORGE_PUBLIC_URL", "").rstrip("/"))
     # How long a served full-res link stays valid (TTL GC, not delete-on-first-GET — a dropped download retries).

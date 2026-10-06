@@ -99,7 +99,7 @@ def test_upload_roundtrip_and_ref_resolution(tmp_path, monkeypatch):
     name = _store_upload(s, _png_bytes())
     # bare name and the full full_res_url form both resolve to the same image
     b64 = _resolve_init_ref(s, name)
-    assert _resolve_init_ref(s, f"http://yuki:8646/img/{name}") == b64
+    assert _resolve_init_ref(s, f"http://gpu-host:8000/img/{name}") == b64
     assert base64.b64decode(b64).startswith(b"\x89PNG")
     for bad in ["../../etc/passwd", r"..\secret.png", "nope.png", "x/../../a.png"]:
         with pytest.raises(ValueError):
