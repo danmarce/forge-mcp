@@ -68,7 +68,7 @@ def _call(settings: Settings, name: str, args: dict) -> dict:
     return json.loads(texts[-1].text)
 
 
-def test_every_tool_declares_all_four_hints():
+def test_every_tool_declares_title_and_all_four_hints():
     tools = asyncio.run(build_server(Settings()).list_tools())
     assert {t.name for t in tools} == {"generate_image", "edit_image", "list_models"}
     by = {}
@@ -76,6 +76,7 @@ def test_every_tool_declares_all_four_hints():
         wire = t.annotations.model_dump(by_alias=True)  # the camelCase JSON a client/directory actually reads
         for hint in ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"):
             assert isinstance(wire.get(hint), bool), f"{t.name}.{hint} unset"
+        assert t.title and wire.get("title") == t.title, f"{t.name} missing title"
         by[t.name] = wire
     assert by["list_models"]["readOnlyHint"] and not by["generate_image"]["readOnlyHint"]
     assert not any(w["destructiveHint"] for w in by.values())

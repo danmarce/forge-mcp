@@ -62,8 +62,16 @@ prompt change won't help). These are three distinct outcomes — branch on `stat
 # All four hints explicit on every tool (some directories reject tools that leave any unset).
 # Generators: write a NEW file only (never overwrite/delete -> not destructive); not idempotent (seed=-1 is a
 # fresh image each call, and even a locked seed mints a new link). Closed world: talks only to its own Forge.
-TOOL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
-READ_TOOL = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+# The human-readable `title` goes in both places the spec has carried it (Tool.title, and annotations.title for
+# older clients) — Anthropic's directory requires a title on every tool.
+def _gen_hints(title: str) -> ToolAnnotations:
+    return ToolAnnotations(title=title, readOnlyHint=False, destructiveHint=False, idempotentHint=False,
+                           openWorldHint=False)
+
+
+def _read_hints(title: str) -> ToolAnnotations:
+    return ToolAnnotations(title=title, readOnlyHint=True, destructiveHint=False, idempotentHint=True,
+                           openWorldHint=False)
 
 
 def _resolve_wh(shot: str | None, width: int | None, height: int | None) -> tuple[int, int]:
@@ -216,7 +224,7 @@ def build_server(settings: Settings) -> MCPServer:
             TextContent(type="text", text=json.dumps(out, ensure_ascii=False)),
         ]
 
-    @mcp.tool(annotations=TOOL, structured_output=False)
+    @mcp.tool(title="Generate image", annotations=_gen_hints("Generate image"), structured_output=False)
     async def generate_image(
         prompt: str,
         shot: str = DEFAULT_SHOT,
@@ -277,7 +285,7 @@ def build_server(settings: Settings) -> MCPServer:
         except ForgeError as e:
             return _error("forge", str(e))
 
-    @mcp.tool(annotations=TOOL, structured_output=False)
+    @mcp.tool(title="Edit image", annotations=_gen_hints("Edit image"), structured_output=False)
     async def edit_image(
         prompt: str,
         init_image_ref: str | None = None,
@@ -348,7 +356,7 @@ def build_server(settings: Settings) -> MCPServer:
         except ForgeError as e:
             return _error("forge", str(e))
 
-    @mcp.tool(annotations=READ_TOOL, structured_output=False)
+    @mcp.tool(title="List models", annotations=_read_hints("List models"), structured_output=False)
     async def list_models(refresh: bool = False) -> list[Any]:
         """List the checkpoints and LoRAs available on the Forge box, and which checkpoint is loaded.
 
