@@ -96,6 +96,8 @@ and "sex" blocks "uni**sex**" (a real false-positive that blocked an innocent pr
 
 - Python 3.12, `uv`, few dependencies (`httpx` / `mcp` / `Pillow` / `truststore`). License MPL-2.0.
 - Keep it stateless and deterministic. Never rewrite prompts silently; never relax the NSFW floor via a flag.
-- Tests: `uv run pytest` (NSFW denylist regression, the `status` contract shape, full-res TTL-GC + path-traversal).
+- Tests: `uv run pytest` (NSFW denylist regression, the `status` contract shape, full-res TTL-GC + path-traversal,
+  and `tests/test_tools.py`: every tool called by name against a fake Forge — hints, verbatim prompt, the floor in
+  the sent payload, init-by-ref). Every tool declares **all four** hints explicitly; a new tool must too.
   Behind a TLS-inspecting proxy, `uv` needs `--system-certs` (see README). Deployment (on a shared-GPU host) and
   its mcpo wiring live wherever this is deployed, not in this repo — this repo stays the generic, public tool.

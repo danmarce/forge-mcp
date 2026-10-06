@@ -59,7 +59,11 @@ unchanged), or "error" (a genuine FAULT — `kind` like "gpu_oom"/"forge" + `det
 prompt change won't help). These are three distinct outcomes — branch on `status`, never on the prose.
 """
 
-TOOL = ToolAnnotations(readOnlyHint=False, openWorldHint=False)
+# All four hints explicit on every tool (some directories reject tools that leave any unset).
+# Generators: write a NEW file only (never overwrite/delete -> not destructive); not idempotent (seed=-1 is a
+# fresh image each call, and even a locked seed mints a new link). Closed world: talks only to its own Forge.
+TOOL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+READ_TOOL = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
 def _resolve_wh(shot: str | None, width: int | None, height: int | None) -> tuple[int, int]:
@@ -344,8 +348,7 @@ def build_server(settings: Settings) -> MCPServer:
         except ForgeError as e:
             return _error("forge", str(e))
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False),
-              structured_output=False)
+    @mcp.tool(annotations=READ_TOOL, structured_output=False)
     async def list_models(refresh: bool = False) -> list[Any]:
         """List the checkpoints and LoRAs available on the Forge box, and which checkpoint is loaded.
 
